@@ -4,13 +4,14 @@ wget -O loader.sh https://raw.githubusercontent.com/DiscoverMyself/Ramanode-Guid
 curl -s https://raw.githubusercontent.com/DiscoverMyself/Ramanode-Guides/main/logo.sh | bash
 sleep 4
 
-sudo apt-get update && sudo apt get upgrade -y
+sudo apt-get update && sudo apt-get upgrade -y
 clear
 
 echo "Installing Hardhat and dotenv..."
 npm install --save-dev hardhat
 npm install dotenv
 npm install @swisstronik/utils
+npm install @openzeppelin/contracts
 echo "Installation completed."
 
 echo "Creating a Hardhat project..."
@@ -36,7 +37,7 @@ require("@nomicfoundation/hardhat-toolbox");
 require("dotenv").config();
 
 module.exports = {
-  solidity: "0.8.19",
+  solidity: "0.8.20",
   networks: {
     swisstronik: {
       url: "https://json-rpc.testnet.swisstronik.com/",
@@ -47,29 +48,30 @@ module.exports = {
 EOL
 echo "Hardhat configuration completed."
 
-echo "Creating Hello_swtr.sol contract..."
+read -p "Enter the token name: " TOKEN_NAME
+read -p "Enter the token symbol: " TOKEN_SYMBOL
+
+echo "Creating Token.sol contract..."
 mkdir -p contracts
-cat <<EOL > contracts/Hello_swtr.sol
+cat <<EOL > contracts/Token.sol
 // SPDX-License-Identifier: UNLICENSED
-pragma solidity ^0.8.19;
+pragma solidity ^0.8.20;
 
-contract Swisstronik {
-    string private message;
+import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 
-    constructor(string memory _message) payable {
-        message = _message;
+contract TestToken is ERC20 {
+    constructor()ERC20("$TOKEN_NAME","$TOKEN_SYMBOL"){} 
+
+    function mint100tokens() public {
+        _mint(msg.sender, 100*10**18);
     }
 
-    function setMessage(string memory _message) public {
-        message = _message;
-    }
-
-    function getMessage() public view returns(string memory) {
-        return message;
+    function burn100tokens() public{
+        _burn(msg.sender, 100*10**18);
     }
 }
 EOL
-echo "Hello_swtr.sol contract created."
+echo "Token.sol contract created."
 
 echo "Compiling the contract..."
 npx hardhat compile
@@ -79,11 +81,14 @@ echo "Creating deploy.js script..."
 mkdir -p scripts
 cat <<EOL > scripts/deploy.js
 const hre = require("hardhat");
+const fs = require("fs");
 
 async function main() {
-  const contract = await hre.ethers.deployContract("Swisstronik", ["Hello Swisstronik from Happy Cuan Airdrop!!"]);
+  const contract = await hre.ethers.deployContract("TestToken");
   await contract.waitForDeployment();
-  console.log(\`Swisstronik contract deployed to \${contract.target}\`);
+  const deployedContract = await contract.getAddress();
+  fs.writeFileSync("contract.txt", deployedContract);
+  console.log(\`Contract deployed to \${deployedContract}\`);
 }
 
 main().catch((error) => {
@@ -97,14 +102,15 @@ echo "Deploying the contract..."
 npx hardhat run scripts/deploy.js --network swisstronik
 echo "Contract deployed."
 
-echo "Creating setMessage.js script..."
-cat <<EOL > scripts/setMessage.js
+echo "Creating mint.js script..."
+cat <<EOL > scripts/mint.js
 const hre = require("hardhat");
+const fs = require("fs");
 const { encryptDataField, decryptNodeResponse } = require("@swisstronik/utils");
 
 const sendShieldedTransaction = async (signer, destination, data, value) => {
-  const rpclink = hre.network.config.url;
-  const [encryptedData] = await encryptDataField(rpclink, data);
+  const rpcLink = hre.network.config.url;
+  const [encryptedData] = await encryptDataField(rpcLink, data);
   return await signer.sendTransaction({
     from: signer.address,
     to: destination,
@@ -114,15 +120,19 @@ const sendShieldedTransaction = async (signer, destination, data, value) => {
 };
 
 async function main() {
-  const contractAddress = "0xf84Df872D385997aBc28E3f07A2E3cd707c9698a";
+  const contractAddress = fs.readFileSync("contract.txt", "utf8").trim();
   const [signer] = await hre.ethers.getSigners();
-  const contractFactory = await hre.ethers.getContractFactory("Swisstronik");
+  const contractFactory = await hre.ethers.getContractFactory("TestToken");
   const contract = contractFactory.attach(contractAddress);
-  const functionName = "setMessage";
-  const messageToSet = "Hello Swisstronik from Happy Cuan Airdrop!!";
-  const setMessageTx = await sendShieldedTransaction(signer, contractAddress, contract.interface.encodeFunctionData(functionName, [messageToSet]), 0);
-  await setMessageTx.wait();
-  console.log("Transaction Receipt: ", setMessageTx);
+  const functionName = "mint100tokens";
+  const mint100TokensTx = await sendShieldedTransaction(
+    signer,
+    contractAddress,
+    contract.interface.encodeFunctionData(functionName),
+    0
+  );
+  await mint100TokensTx.wait();
+  console.log("Transaction Receipt: ", \`Minting token has been success! Transaction hash: https://explorer-evm.testnet.swisstronik.com/tx/\${mint100TokensTx.hash}\`);
 }
 
 main().catch((error) => {
@@ -130,35 +140,45 @@ main().catch((error) => {
   process.exitCode = 1;
 });
 EOL
-echo "setMessage.js script created."
+echo "mint.js script created."
 
-echo "Running setMessage.js..."
-npx hardhat run scripts/setMessage.js --network swisstronik
-echo "Message set."
+echo "Minting tokens..."
+npx hardhat run scripts/mint.js --network swisstronik
+echo "Tokens minted."
 
-echo "Creating getMessage.js script..."
-cat <<EOL > scripts/getMessage.js
+echo "Creating transfer.js script..."
+cat <<EOL > scripts/transfer.js
 const hre = require("hardhat");
+const fs = require("fs");
 const { encryptDataField, decryptNodeResponse } = require("@swisstronik/utils");
 
-const sendShieldedQuery = async (provider, destination, data) => {
-  const rpclink = hre.network.config.url;
-  const [encryptedData, usedEncryptedKey] = await encryptDataField(rpclink, data);
-  const response = await provider.call({
+const sendShieldedTransaction = async (signer, destination, data, value) => {
+  const rpcLink = hre.network.config.url;
+  const [encryptedData] = await encryptDataField(rpcLink, data);
+  return await signer.sendTransaction({
+    from: signer.address,
     to: destination,
     data: encryptedData,
+    value,
   });
-  return await decryptNodeResponse(rpclink, response, usedEncryptedKey);
 };
 
 async function main() {
-  const contractAddress = "0xf84Df872D385997aBc28E3f07A2E3cd707c9698a";
+  const contractAddress = fs.readFileSync("contract.txt", "utf8").trim();
   const [signer] = await hre.ethers.getSigners();
-  const contractFactory = await hre.ethers.getContractFactory("Swisstronik");
+  const contractFactory = await hre.ethers.getContractFactory("TestToken");
   const contract = contractFactory.attach(contractAddress);
-  const functionName = "getMessage";
-  const responseMessage = await sendShieldedQuery(signer.provider, contractAddress, contract.interface.encodeFunctionData(functionName));
-  console.log("Decoded response:", contract.interface.decodeFunctionResult(functionName, responseMessage)[0]);
+  const functionName = "transfer";
+  const amount = 1 * 10 ** 18;
+  const functionArgs = ["0x16af037878a6cAce2Ea29d39A3757aC2F6F7aac1", amount.toString()];
+  const transaction = await sendShieldedTransaction(
+    signer,
+    contractAddress,
+    contract.interface.encodeFunctionData(functionName, functionArgs),
+    0
+  );
+  await transaction.wait();
+  console.log("Transaction Response: ", \`Transfer token has been success! Transaction hash: https://explorer-evm.testnet.swisstronik.com/tx/\${transaction.hash}\`);
 }
 
 main().catch((error) => {
@@ -166,9 +186,9 @@ main().catch((error) => {
   process.exitCode = 1;
 });
 EOL
-echo "getMessage.js script created."
+echo "transfer.js script created."
 
-echo "Running getMessage.js..."
-npx hardhat run scripts/getMessage.js --network swisstronik
-echo "Message retrieved."
+echo "Transferring tokens..."
+npx hardhat run scripts/transfer.js --network swisstronik
+echo "Tokens transferred."
 echo "Done! Subscribe: https://t.me/HappyCuanAirdrop"
